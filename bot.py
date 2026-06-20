@@ -4,13 +4,19 @@ import time
 import asyncio
 import mimetypes
 from urllib.parse import urlparse
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
+# Variables from Railway
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+
+# Pyrogram Client Initialize
+app = Client("fast_downloader_bot", api_id=int(API_ID), api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 def get_readable_size(size_in_bytes):
-    if size_in_bytes is None or size_in_bytes == 0:
+    if not size_in_bytes:
         return "0 B"
     index = 0
     while size_in_bytes >= 1024 and index < 4:
@@ -18,49 +24,55 @@ def get_readable_size(size_in_bytes):
         index += 1
     return f"{size_in_bytes:.2f} {['B', 'KB', 'MB', 'GB', 'TB'][index]}"
 
-class ProgressFileReader:
-    def __init__(self, filename, tracker):
-        self.file_obj = open(filename, "rb")
-        self.tracker = tracker
+def generate_progress_bar(percentage):
+    pct_num = int(percentage)
+    bars = pct_num // 10
+    return "■" * bars + "□" * (10 - bars)
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.file_obj.close()
-
-    def read(self, size=-1):
-        chunk = self.file_obj.read(size)
-        self.tracker["uploaded"] += len(chunk)
-        return chunk
-        
-    def seek(self, offset, whence=0):
-        return self.file_obj.seek(offset, whence)
-        
-    def tell(self):
-        return self.file_obj.tell()
-
-    def close(self):
-        self.file_obj.close()
-
-    @property
-    def name(self):
-        return self.file_obj.name
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🚀 **Advanced Downloader Bot**\n\nMujhe link bhejein, main live Download aur Upload progress ke sath file Telegram par bhej dunga!"
-    )
-
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
+# Pyrogram's Native Upload Progress Tracker
+async def upload_progress(current, total, status_message, start_time, filename):
+    now = time.time()
     
+    # Check if we need to update (every 3 seconds)
+    if hasattr(status_message, 'last_update_time'):
+        if (now - status_message.last_update_time) < 3 and current != total:
+            return
+            
+    status_message.last_update_time = now
+    diff = now - start_time
+    speed = current / diff if diff > 0 else 0
+    percentage = (current / total) * 100
+    
+    progress_bar = generate_progress_bar(percentage)
+    dl_str = get_readable_size(current)
+    tot_str = get_readable_size(total)
+    spd_str = get_readable_size(speed)
+
+    text = (
+        f"📤 **Uploading to Telegram (up to 2GB)...**\n\n"
+        f"📁 **File:** `{filename}`\n"
+        f"📊 **Progress:** `[{progress_bar}] {percentage:.1f}%`\n"
+        f"⚙️ **Status:** `{dl_str} / {tot_str}`\n"
+        f"⚡ **Speed:** `{spd_str}/s`"
+    )
+    try:
+        await status_message.edit_text(text)
+    except Exception:
+        pass
+
+@app.on_message(filters.command("start"))
+async def start(client, message):
+    await message.reply_text("🚀 **Ultra Fast Pyrogram Downloader (2GB Limit)**\n\nMujhe link bhejein, main max speed me download karke upload kar dunga!")
+
+@app.on_message(filters.text & ~filters.command)
+async def handle_link(client, message):
+    url = message.text.strip()
     if not (url.startswith("http://") or url.startswith("https://")):
-        await update.message.reply_text("❌ Please ek valid HTTP/HTTPS direct link bhejein.")
+        await message.reply_text("❌ Please ek valid HTTP/HTTPS direct link bhejein.")
         return
 
-    status_message = await update.message.reply_text("⚡ **Server se connect ho raha hai...**")
-
+    status_message = await message.reply_text("⚡ **Aria2 Turbo Engine Start ho raha hai...**")
+    
     parsed_url = urlparse(url)
     filename = os.path.basename(parsed_url.path)
     if not filename or '.' not in filename:
@@ -69,10 +81,11 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         
+        # 16 Connections for MAX downloading speed!
         command = [
             "aria2c",
-            "-x", "4",
-            "-s", "4",
+            "-x", "16",
+            "-s", "16",
             "--continue=true",
             f"--user-agent={user_agent}",
             "--max-tries=10",
@@ -96,32 +109,30 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
                 
             line = line_bytes.decode('utf-8', errors='ignore')
-            
             match = re.search(r'\[#\w+\s+([\d\w\.]+)/([\d\w\.]+)\(([\d%]+)\)\s+CN:\d+\s+DL:([\d\w\.]+)(?:.*)\]', line)
             
             if match:
                 downloaded = match.group(1)   
                 total_size = match.group(2)   
-                percentage = match.group(3)   
+                percentage_str = match.group(3)   
                 speed = match.group(4)        
 
                 if time.time() - last_edit_time >= 3:
                     try:
-                        pct_num = int(percentage.replace('%', ''))
-                        bars = int(pct_num / 10)
-                        progress_bar = "■" * bars + "□" * (10 - bars)
+                        pct_num = float(percentage_str.replace('%', ''))
+                        progress_bar = generate_progress_bar(pct_num)
                     except:
                         progress_bar = "■■■■■■■■■■"
 
-                    progress_text = (
-                        f"📥 **Downloading (Live)...**\n\n"
+                    text = (
+                        f"📥 **Downloading (16x Turbo)...**\n\n"
                         f"📁 **File:** `{filename}`\n"
-                        f"📊 **Progress:** `[{progress_bar}] {percentage}`\n"
+                        f"📊 **Progress:** `[{progress_bar}] {percentage_str}`\n"
                         f"⚙️ **Status:** `{downloaded} / {total_size}`\n"
                         f"⚡ **Speed:** `{speed}/s`"
                     )
                     try:
-                        await status_message.edit_text(progress_text, parse_mode="Markdown")
+                        await status_message.edit_text(text)
                         last_edit_time = time.time()
                     except Exception:
                         pass
@@ -129,69 +140,39 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process.wait()
 
         if process.returncode != 0:
-            raise Exception("Server ne link close kar di. Link check karein.")
+            raise Exception("Aria2 download fail. Link expire ho gayi ya server issue hai.")
 
-        await status_message.edit_text("📤 **Download mukammal! Upload shuru ho raha hai...**")
+        await status_message.edit_text("📤 **Download mukammal! Pyrogram ke zariye upload shuru...**")
         
-        total_size_bytes = os.path.getsize(filename)
-        tracker = {"uploaded": 0, "total": total_size_bytes}
-        
-        async def update_upload_progress():
-            last_uploaded = 0
-            last_time = time.time()
-            
-            while tracker["uploaded"] < tracker["total"]:
-                await asyncio.sleep(3)
-                
-                current_uploaded = tracker["uploaded"]
-                current_time = time.time()
-                
-                if current_uploaded == last_uploaded:
-                    continue
-                    
-                time_diff = current_time - last_time
-                speed_bps = (current_uploaded - last_uploaded) / time_diff if time_diff > 0 else 0
-                
-                last_uploaded = current_uploaded
-                last_time = current_time
-                
-                percentage = (current_uploaded / tracker["total"]) * 100
-                pct_num = int(percentage)
-                bars = pct_num // 10
-                progress_bar = "■" * bars + "□" * (10 - bars)
-                
-                dl_str = get_readable_size(current_uploaded)
-                tot_str = get_readable_size(tracker["total"])
-                spd_str = get_readable_size(speed_bps)
-                
-                progress_text = (
-                    f"📤 **Uploading to Telegram...**\n\n"
-                    f"📁 **File:** `{filename}`\n"
-                    f"📊 **Progress:** `[{progress_bar}] {percentage:.1f}%`\n"
-                    f"⚙️ **Status:** `{dl_str} / {tot_str}`\n"
-                    f"⚡ **Speed:** `{spd_str}/s`"
-                )
-                
-                try:
-                    await status_message.edit_text(progress_text, parse_mode="Markdown")
-                except Exception:
-                    pass
-
-        upload_task = asyncio.create_task(update_upload_progress())
-
         mime_type, _ = mimetypes.guess_type(filename)
         mime_type = mime_type or ""
 
-        with ProgressFileReader(filename, tracker) as file_to_send:
-            if 'video' in mime_type:
-                await update.message.reply_video(video=file_to_send, caption=f"🎥 **Uploaded:** `{filename}`", parse_mode="Markdown")
-            elif 'audio' in mime_type:
-                await update.message.reply_audio(audio=file_to_send, caption=f"🎵 **Uploaded:** `{filename}`", parse_mode="Markdown")
-            else:
-                await update.message.reply_document(document=file_to_send, caption=f"📄 **Uploaded:** `{filename}`", parse_mode="Markdown")
-
-        upload_task.cancel()
+        start_time = time.time()
+        status_message.last_update_time = time.time() # initialize for uploader
         
+        # Pyrogram Built-in Uploader
+        if 'video' in mime_type or filename.endswith(('.mkv', '.mp4', '.avi')):
+            await message.reply_video(
+                video=filename,
+                caption=f"🎥 **Uploaded:** `{filename}`",
+                progress=upload_progress,
+                progress_args=(status_message, start_time, filename)
+            )
+        elif 'audio' in mime_type:
+            await message.reply_audio(
+                audio=filename,
+                caption=f"🎵 **Uploaded:** `{filename}`",
+                progress=upload_progress,
+                progress_args=(status_message, start_time, filename)
+            )
+        else:
+            await message.reply_document(
+                document=filename,
+                caption=f"📄 **Uploaded:** `{filename}`",
+                progress=upload_progress,
+                progress_args=(status_message, start_time, filename)
+            )
+
         if os.path.exists(filename):
             os.remove(filename)
         await status_message.delete()
@@ -201,17 +182,9 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(filename):
             os.remove(filename)
 
-def main():
-    if not BOT_TOKEN:
-        print("Error: BOT_TOKEN nahi mila!")
-        return
-
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-
-    print("Pro Bot Running with Upload & Download bars...")
-    application.run_polling()
-
 if __name__ == "__main__":
-    main()
+    if not all([API_ID, API_HASH, BOT_TOKEN]):
+        print("Error: API_ID, API_HASH, ya BOT_TOKEN missing hai Railway variables me!")
+    else:
+        print("Pyrogram Ultra Fast Bot Running...")
+        app.run()
