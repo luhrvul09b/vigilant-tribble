@@ -33,7 +33,6 @@ def generate_progress_bar(percentage):
 async def upload_progress(current, total, status_message, start_time, filename):
     now = time.time()
     
-    # Check if we need to update (every 3 seconds)
     if hasattr(status_message, 'last_update_time'):
         if (now - status_message.last_update_time) < 3 and current != total:
             return
@@ -64,7 +63,8 @@ async def upload_progress(current, total, status_message, start_time, filename):
 async def start(client, message):
     await message.reply_text("🚀 **Ultra Fast Pyrogram Downloader (2GB Limit)**\n\nMujhe link bhejein, main max speed me download karke upload kar dunga!")
 
-@app.on_message(filters.text & ~filters.command)
+# FIX APPLIED HERE
+@app.on_message(filters.text & ~filters.regex(r"^/"))
 async def handle_link(client, message):
     url = message.text.strip()
     if not (url.startswith("http://") or url.startswith("https://")):
