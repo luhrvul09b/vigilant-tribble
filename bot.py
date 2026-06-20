@@ -9,7 +9,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Human readable bytes converter
 def get_readable_size(size_in_bytes):
     if size_in_bytes is None or size_in_bytes == 0:
         return "0 B"
@@ -19,11 +18,16 @@ def get_readable_size(size_in_bytes):
         index += 1
     return f"{size_in_bytes:.2f} {['B', 'KB', 'MB', 'GB', 'TB'][index]}"
 
-# Custom File Reader for Live Upload Progress
 class ProgressFileReader:
     def __init__(self, filename, tracker):
         self.file_obj = open(filename, "rb")
         self.tracker = tracker
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.file_obj.close()
 
     def read(self, size=-1):
         chunk = self.file_obj.read(size)
@@ -63,16 +67,13 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename = "downloaded_file.mp4"
 
     try:
-        # ==========================================
-        # 1. DOWNLOAD PHASE (Aria2c)
-        # ==========================================
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         
         command = [
             "aria2c",
-            "-x", "4",  # Hugging Face ke liye 4 safe hai (Block nahi hoga)
+            "-x", "4",
             "-s", "4",
-            "--continue=true", # Error aane par resume karega
+            "--continue=true",
             f"--user-agent={user_agent}",
             "--max-tries=10",
             "--retry-wait=3",
@@ -96,7 +97,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             line = line_bytes.decode('utf-8', errors='ignore')
             
-            # Aria2 status fetch karna
             match = re.search(r'\[#\w+\s+([\d\w\.]+)/([\d\w\.]+)\(([\d%]+)\)\s+CN:\d+\s+DL:([\d\w\.]+)(?:.*)\]', line)
             
             if match:
@@ -105,7 +105,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 percentage = match.group(3)   
                 speed = match.group(4)        
 
-                # Exactly 3 second update rule
                 if time.time() - last_edit_time >= 3:
                     try:
                         pct_num = int(percentage.replace('%', ''))
@@ -132,21 +131,17 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if process.returncode != 0:
             raise Exception("Server ne link close kar di. Link check karein.")
 
-        # ==========================================
-        # 2. UPLOAD PHASE (Custom Tracker)
-        # ==========================================
         await status_message.edit_text("📤 **Download mukammal! Upload shuru ho raha hai...**")
         
         total_size_bytes = os.path.getsize(filename)
         tracker = {"uploaded": 0, "total": total_size_bytes}
         
-        # Upload Progress Update Task (Background me chalega)
         async def update_upload_progress():
             last_uploaded = 0
             last_time = time.time()
             
             while tracker["uploaded"] < tracker["total"]:
-                await asyncio.sleep(3) # Har 3 sec update
+                await asyncio.sleep(3)
                 
                 current_uploaded = tracker["uploaded"]
                 current_time = time.time()
@@ -154,7 +149,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if current_uploaded == last_uploaded:
                     continue
                     
-                # Speed Calculation
                 time_diff = current_time - last_time
                 speed_bps = (current_uploaded - last_uploaded) / time_diff if time_diff > 0 else 0
                 
@@ -183,10 +177,8 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
-        # Tracker task ko start karein
         upload_task = asyncio.create_task(update_upload_progress())
 
-        # File bhejne ka logic
         mime_type, _ = mimetypes.guess_type(filename)
         mime_type = mime_type or ""
 
@@ -198,7 +190,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_document(document=file_to_send, caption=f"📄 **Uploaded:** `{filename}`", parse_mode="Markdown")
 
-        # Upload complete hone par task cancel aur file delete
         upload_task.cancel()
         
         if os.path.exists(filename):
