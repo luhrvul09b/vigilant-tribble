@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Aria2c install karne ke liye
-RUN apt-get update && apt-get install -y aria2 rm -rf /var/lib/apt/lists/*
+# System updates aur Aria2 install karne ke liye (Sahi Syntax)
+RUN apt-get update && apt-get install -y aria2 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
