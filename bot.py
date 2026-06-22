@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import shutil
 import asyncio
 import mimetypes
 from urllib.parse import urlparse
@@ -72,13 +73,15 @@ async def handle_link(client, message):
 
     status_message = await message.reply_text("⚡ **Aria2 Turbo Engine Start ho raha hai...**")
     
-    # Default name fallback agar kuch bhi na mile
-    filename = "downloaded_file.mp4"
+    # Har download ke liye ek unique temporary directory banate hain
+    download_dir = f"dl_{int(time.time())}"
+    os.makedirs(download_dir, exist_ok=True)
+    
+    filename = "downloaded_file.mp4" # Fallback name display ke liye
 
     try:
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         
-        # FIXED: Added content-disposition flags and removed strict '--out' naming
         command = [
             "aria2c",
             "-x", "16",
@@ -88,7 +91,8 @@ async def handle_link(client, message):
             "--max-tries=10",
             "--retry-wait=3",
             "--summary-interval=1",
-            "--content-disposition-default-utf8=true",  # Server headers sa name extract karega
+            "--content-disposition-default-utf8=true",
+            "--dir", download_dir,  # File is specific folder me hi download hogi
             url
         ]
 
@@ -107,7 +111,7 @@ async def handle_link(client, message):
                 
             line = line_bytes.decode('utf-8', errors='ignore')
             
-            # FIXED: Aria2c jab file name allocate karta ha to console me log karta ha. Usse name extract kar rahe hain.
+            # Agar log sa filename mil jaye to text progress me show karne ke liye update kar dein
             if "Destination:" in line:
                 extracted_name = line.split("Destination:")[-1].strip()
                 if extracted_name:
@@ -146,50 +150,57 @@ async def handle_link(client, message):
         if process.returncode != 0:
             raise Exception("Aria2 download fail. Link expire ho gayi ya server issue hai.")
 
-        # Double check if file exists with the captured filename
-        if not os.path.exists(filename):
-            # Fallback check agar aria2 ne kisi wajah sa current dir me dynamic name sa file save ki ho
-            raise Exception("Downloaded file nahi mili. Name extraction issue.")
+        # --- NEW LOGIC TO FIND THE FILE ---
+        # download_dir check karo aur jo bhi file andar mili, usko final path bana lo
+        files_in_dir = os.listdir(download_dir)
+        if not files_in_dir:
+            raise Exception("Downloaded file nahi mili directory me.")
+        
+        # Pehli valid file uthao (aria2 temp files ko ignore karne ke liye filtering)
+        downloaded_file_name = [f for f in files_in_dir if not f.endswith(('.aria2', '.json'))][0]
+        file_path = os.path.join(download_dir, downloaded_file_name)
+        filename = downloaded_file_name # Real filename override for telegram caption
 
         await status_message.edit_text("📤 **Download mukammal! Pyrogram ke zariye upload shuru...**")
         
-        mime_type, _ = mimetypes.guess_type(filename)
+        mime_type, _ = mimetypes.guess_type(file_path)
         mime_type = mime_type or ""
 
         start_time = time.time()
-        status_message.last_update_time = time.time() # initialize for uploader
+        status_message.last_update_time = time.time()
         
-        # Pyrogram Built-in Uploader
+        # Pyrogram Built-in Uploader using strict file_path
         if 'video' in mime_type or filename.lower().endswith(('.mkv', '.mp4', '.avi', '.mov')):
             await message.reply_video(
-                video=filename,
+                video=file_path,
                 caption=f"🎥 **Uploaded:** `{filename}`",
                 progress=upload_progress,
                 progress_args=(status_message, start_time, filename)
             )
         elif 'audio' in mime_type:
             await message.reply_audio(
-                audio=filename,
+                audio=file_path,
                 caption=f"🎵 **Uploaded:** `{filename}`",
                 progress=upload_progress,
                 progress_args=(status_message, start_time, filename)
             )
         else:
             await message.reply_document(
-                document=filename,
+                document=file_path,
                 caption=f"📄 **Uploaded:** `{filename}`",
                 progress=upload_progress,
                 progress_args=(status_message, start_time, filename)
             )
 
-        if os.path.exists(filename):
-            os.remove(filename)
+        # Cleanup target dir completely
+        if os.path.exists(download_dir):
+            shutil.rmtree(download_dir)
         await status_message.delete()
 
     except Exception as e:
         await status_message.edit_text(f"❌ **Error:**\n`{str(e)}`")
-        if os.path.exists(filename):
-            os.remove(filename)
+        if os.path.exists(download_dir):
+            shutil.rmtree(download_dir)
 
 if __name__ == "__main__":
     if not all([API_ID, API_HASH, BOT_TOKEN]):
