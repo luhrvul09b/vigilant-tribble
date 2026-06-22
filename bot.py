@@ -63,7 +63,6 @@ async def upload_progress(current, total, status_message, start_time, filename):
 async def start(client, message):
     await message.reply_text("🚀 **Ultra Fast Pyrogram Downloader (2GB Limit)**\n\nMujhe link bhejein, main max speed me download karke upload kar dunga!")
 
-# FIX APPLIED HERE
 @app.on_message(filters.text & ~filters.regex(r"^/"))
 async def handle_link(client, message):
     url = message.text.strip()
@@ -73,15 +72,13 @@ async def handle_link(client, message):
 
     status_message = await message.reply_text("⚡ **Aria2 Turbo Engine Start ho raha hai...**")
     
-    parsed_url = urlparse(url)
-    filename = os.path.basename(parsed_url.path)
-    if not filename or '.' not in filename:
-        filename = "downloaded_file.mp4"
+    # Default name fallback agar kuch bhi na mile
+    filename = "downloaded_file.mp4"
 
     try:
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         
-        # 16 Connections for MAX downloading speed!
+        # FIXED: Added content-disposition flags and removed strict '--out' naming
         command = [
             "aria2c",
             "-x", "16",
@@ -91,7 +88,7 @@ async def handle_link(client, message):
             "--max-tries=10",
             "--retry-wait=3",
             "--summary-interval=1",
-            "--out", filename,
+            "--content-disposition-default-utf8=true",  # Server headers sa name extract karega
             url
         ]
 
@@ -109,6 +106,13 @@ async def handle_link(client, message):
                 break
                 
             line = line_bytes.decode('utf-8', errors='ignore')
+            
+            # FIXED: Aria2c jab file name allocate karta ha to console me log karta ha. Usse name extract kar rahe hain.
+            if "Destination:" in line:
+                extracted_name = line.split("Destination:")[-1].strip()
+                if extracted_name:
+                    filename = os.path.basename(extracted_name)
+
             match = re.search(r'\[#\w+\s+([\d\w\.]+)/([\d\w\.]+)\(([\d%]+)\)\s+CN:\d+\s+DL:([\d\w\.]+)(?:.*)\]', line)
             
             if match:
@@ -142,6 +146,11 @@ async def handle_link(client, message):
         if process.returncode != 0:
             raise Exception("Aria2 download fail. Link expire ho gayi ya server issue hai.")
 
+        # Double check if file exists with the captured filename
+        if not os.path.exists(filename):
+            # Fallback check agar aria2 ne kisi wajah sa current dir me dynamic name sa file save ki ho
+            raise Exception("Downloaded file nahi mili. Name extraction issue.")
+
         await status_message.edit_text("📤 **Download mukammal! Pyrogram ke zariye upload shuru...**")
         
         mime_type, _ = mimetypes.guess_type(filename)
@@ -151,7 +160,7 @@ async def handle_link(client, message):
         status_message.last_update_time = time.time() # initialize for uploader
         
         # Pyrogram Built-in Uploader
-        if 'video' in mime_type or filename.endswith(('.mkv', '.mp4', '.avi')):
+        if 'video' in mime_type or filename.lower().endswith(('.mkv', '.mp4', '.avi', '.mov')):
             await message.reply_video(
                 video=filename,
                 caption=f"🎥 **Uploaded:** `{filename}`",
